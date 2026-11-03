@@ -175,6 +175,12 @@ where
         self
     }
 
+    /// Set the compression algorithm used when writing entries to disk.
+    pub fn with_compression(mut self, compression: Compression) -> Self {
+        self.compression = compression;
+        self
+    }
+
     /// Set the shard num of the indexer. Each shard has its own lock.
     ///
     /// Default: `64`.
