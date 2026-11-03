@@ -1505,6 +1505,22 @@ mod tests {
     }
 
     #[test_log::test(tokio::test)]
+    async fn test_block_engine_compresses_oversized_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let hybrid = open_with(dir.path(), |b| b, |b| b.with_compression(crate::Compression::Zstd)).await;
+        let value = vec![42; 2 * MB];
+
+        hybrid.insert(1, value.clone());
+        hybrid.flush_if(|_, _| true).await;
+        hybrid.storage().wait().await;
+        assert!(hybrid.memory().get(&1).is_none());
+        let restored = hybrid.get(&1).await.unwrap().unwrap();
+        assert_eq!(restored.source(), Source::Disk);
+        assert_eq!(restored.value(), &value);
+        hybrid.close().await.unwrap();
+    }
+
+    #[test_log::test(tokio::test)]
     async fn test_flush_if() {
         let dir = tempfile::tempdir().unwrap();
         let hybrid = open(dir.path()).await;
