@@ -665,7 +665,7 @@ where
                                 ?e,
                                 "[block engine load]: deserialize read buffer raise error, remove this entry and skip"
                             );
-                            indexer.remove(hash);
+                            indexer.remove_if_matches(hash, &addr);
                             Ok(Load::Miss)
                         }
                         _ => {
@@ -687,23 +687,29 @@ where
                 ) {
                     Ok(res) => res,
                     Err(e) => {
-                        return match e.kind() {
-                            ErrorKind::MagicMismatch | ErrorKind::ChecksumMismatch | ErrorKind::OutOfRange => {
-                                tracing::warn!(
-                                    hash,
-                                    ?addr,
-                                    ?header,
-                                    ?e,
-                                    "[block engine load]: deserialize read buffer raise error, remove this entry and skip"
-                                );
-                                indexer.remove(hash);
-                                Ok(Load::Miss)
-                            }
-                            _ => {
-                                tracing::error!(hash, ?addr, ?header, ?e, "[block engine load]: load error");
-                                Err(e)
-                            }
-                        };
+                        // The device read succeeded. An EOF from decoding this buffer means
+                        // the serialized entry is incomplete.
+                        let decode_eof = e.kind() == ErrorKind::Io
+                            && e.downcast_ref::<std::io::Error>()
+                                .is_some_and(|e| e.kind() == std::io::ErrorKind::UnexpectedEof);
+                        if decode_eof
+                            || matches!(
+                                e.kind(),
+                                ErrorKind::MagicMismatch | ErrorKind::ChecksumMismatch | ErrorKind::OutOfRange
+                            )
+                        {
+                            tracing::warn!(
+                                hash,
+                                ?addr,
+                                ?header,
+                                ?e,
+                                "[block engine load]: invalid entry, treat as miss"
+                            );
+                            indexer.remove_if_matches(hash, &addr);
+                            return Ok(Load::Miss);
+                        }
+                        tracing::error!(hash, ?addr, ?header, ?e, "[block engine load]: load error");
+                        return Err(e);
                     }
                 };
                 metrics
@@ -1363,6 +1369,47 @@ mod tests {
         }
 
         assert!(store.load(memory.hash(&1)).await.unwrap().kv().is_none());
+    }
+
+    #[test_log::test(tokio::test)]
+    async fn test_store_evicts_entry_with_valid_checksum_and_invalid_value() {
+        use foyer_common::code::Code;
+
+        let dir = tempfile::tempdir().unwrap();
+        let memory = cache_for_test();
+        let store = engine_for_test(dir.path()).await;
+        let hash = memory.hash(&1);
+        enqueue(&store, memory.insert(1, vec![1; KB]));
+        store.wait().await;
+        assert_eq!(store.load(hash).await.unwrap().kv(), Some((1, vec![1; KB])));
+
+        let addr = store.inner.indexer.get(hash).unwrap();
+        let block = store.inner.block_manager.block(addr.block);
+        let mut bytes = IoSliceMut::new(bits::align_up(PAGE, addr.len as usize));
+        let header_len = EntryHeader::serialized_len();
+        let mut payload = vec![0]; // Too short for the value's encoded length.
+        1u64.encode(&mut payload).unwrap();
+        let header = EntryHeader {
+            key_len: (payload.len() - 1) as u32,
+            value_len: 1,
+            hash,
+            sequence: addr.sequence,
+            checksum: crate::serde::Checksummer::checksum64(&payload),
+            compression: Compression::None,
+        };
+        header.write(&mut bytes[..header_len]);
+        bytes[header_len..header_len + payload.len()].copy_from_slice(&payload);
+        let (_, result) = block.write(Box::new(bytes), addr.offset as u64).await;
+        result.unwrap();
+
+        assert!(matches!(store.load(hash).await, Ok(Load::Miss)));
+        assert!(store.inner.indexer.get(hash).is_none());
+        assert!(matches!(store.load(hash).await, Ok(Load::Miss)));
+
+        enqueue(&store, memory.insert(1, vec![2; KB]));
+        store.wait().await;
+        assert_eq!(store.load(hash).await.unwrap().kv(), Some((1, vec![2; KB])));
+        store.close().await.unwrap();
     }
 
     #[test_log::test(tokio::test)]

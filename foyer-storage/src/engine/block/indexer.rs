@@ -185,16 +185,15 @@ impl Indexer {
 
     #[cfg_attr(
         feature = "tracing",
-        fastrace::trace(name = "foyer::storage::block::indexer::remove")
+        fastrace::trace(name = "foyer::storage::block::indexer::remove_if_matches")
     )]
-    pub fn remove(&self, hash: u64) -> Option<EntryAddress> {
+    pub fn remove_if_matches(&self, hash: u64, expected: &EntryAddress) -> Option<EntryAddress> {
         let shard = self.shard(hash);
         match self.shards[shard].write().entry(hash) {
-            Entry::Occupied(o) => match o.get() {
-                Index::Address(_) => self.extract_address(o.remove()),
-                Index::Tombstone(_) => None,
-            },
-            Entry::Vacant(_) => None,
+            Entry::Occupied(o) if matches!(o.get(), Index::Address(addr) if addr == expected) => {
+                self.extract_address(o.remove())
+            }
+            _ => None,
         }
     }
 
@@ -298,6 +297,24 @@ mod tests {
                 sequence,
             },
         }
+    }
+
+    #[test]
+    fn test_remove_if_matches_preserves_replacement() {
+        let indexer = Indexer::new(4);
+        let old = haddr(1, 1);
+        indexer.insert_batch(vec![old.clone()]);
+
+        let replacement = haddr(1, 2);
+        indexer.insert_batch(vec![replacement.clone()]);
+        assert_eq!(indexer.remove_if_matches(1, &old.address), None);
+        assert_eq!(indexer.get(1), Some(replacement.address.clone()));
+
+        assert_eq!(
+            indexer.remove_if_matches(1, &replacement.address),
+            Some(replacement.address),
+        );
+        assert_eq!(indexer.get(1), None);
     }
 
     #[test]
