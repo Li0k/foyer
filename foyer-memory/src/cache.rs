@@ -1079,6 +1079,17 @@ where
         }
     }
 
+    /// Returns the immutable registration role, not the eventual value source.
+    pub fn role(&self) -> crate::GetOrFetchRole {
+        match self {
+            GetOrFetch::Fifo(fut) => fut.role(),
+            GetOrFetch::S3Fifo(fut) => fut.role(),
+            GetOrFetch::Lru(fut) => fut.role(),
+            GetOrFetch::Lfu(fut) => fut.role(),
+            GetOrFetch::Sieve(fut) => fut.role(),
+        }
+    }
+
     /// Check if the future need to be awaited or can be unwrapped at once.
     pub fn need_await(&self) -> bool {
         match self {

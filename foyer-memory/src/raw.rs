@@ -1109,9 +1109,9 @@ where
                         close,
                     };
                     spawner.spawn(fetch);
-                    RawGetOrFetch::Miss(RawWait { waiter })
+                    RawGetOrFetch::Miss(RawWait { waiter, leader: true })
                 }
-                Enqueue::Wait(waiter) => RawGetOrFetch::Miss(RawWait { waiter }),
+                Enqueue::Wait(waiter) => RawGetOrFetch::Miss(RawWait { waiter, leader: false }),
             })
         };
 
@@ -1127,6 +1127,18 @@ where
                 .with(|mut shard| extract(key, shard.get_mutable(hash, key), &shard.inflights)),
         }
     }
+}
+
+/// The role chosen atomically when registering a cache lookup.
+/// This describes registration, not whether disk or external IO will occur.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GetOrFetchRole {
+    /// The entry was already resident in memory.
+    Hit,
+    /// This lookup created the shared producer.
+    Lead,
+    /// This lookup joined an existing producer. Its fallback may still be used.
+    Wait,
 }
 
 #[must_use]
@@ -1181,6 +1193,14 @@ where
     S: HashBuilder,
     I: Indexer<Eviction = E>,
 {
+    pub fn role(&self) -> GetOrFetchRole {
+        match self {
+            Self::Hit(_) => GetOrFetchRole::Hit,
+            Self::Miss(wait) if wait.leader => GetOrFetchRole::Lead,
+            Self::Miss(_) => GetOrFetchRole::Wait,
+        }
+    }
+
     pub fn need_await(&self) -> bool {
         matches!(self, Self::Miss(_))
     }
@@ -1282,6 +1302,7 @@ where
     S: HashBuilder,
     I: Indexer<Eviction = E>,
 {
+    leader: bool,
     waiter: Waiter<Option<RawCacheEntry<E, S, I>>>,
 }
 

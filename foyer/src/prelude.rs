@@ -32,7 +32,7 @@ pub use crate::{
         writer::{HybridCacheStorageWriter, HybridCacheWriter},
     },
     memory::{
-        Cache, CacheBuilder, CacheEntry, CacheProperties, EvictionConfig, FifoConfig, Filter, GetOrFetch, LfuConfig,
+        Cache, CacheBuilder, CacheEntry, CacheProperties, EvictionConfig, FifoConfig, Filter, GetOrFetch, GetOrFetchRole, LfuConfig,
         LruConfig, S3FifoConfig, SieveConfig, Weighter,
     },
     storage::{

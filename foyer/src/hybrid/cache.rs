@@ -1028,6 +1028,12 @@ where
     V: StorageValue,
     S: HashBuilder + Debug,
 {
+    /// Returns the immutable registration role. A waiter can supply the fallback
+    /// for an existing disk-only lookup, so `Wait` does not imply no external IO.
+    pub fn role(&self) -> foyer_memory::GetOrFetchRole {
+        self.inner.role()
+    }
+
     /// Check if the future need to be awaited or can be unwrap at once.
     pub fn need_await(&self) -> bool {
         self.inner.need_await()
@@ -1573,6 +1579,7 @@ mod tests {
             b.wait().await;
             Ok::<_, Error>(vec![b'x'; 42])
         });
+        assert_eq!(fetch.role(), foyer_memory::GetOrFetchRole::Wait);
         load_holder.unhold();
 
         // Release fetch to proceed.
@@ -1594,9 +1601,17 @@ mod tests {
 
         let hybrid = open_with(dir.path(), |b| b, |b| b.with_flush_switch(flush_switch.clone())).await;
 
-        let f1 = hybrid.get_or_fetch(&1, || async move { Ok::<_, Error>(vec![1; 7 * KB]) });
+        let release = Arc::new(Barrier::new(2));
+        let wait = release.clone();
+        let f1 = hybrid.get_or_fetch(&1, || async move {
+            wait.wait().await;
+            Ok::<_, Error>(vec![1; 7 * KB])
+        });
         let f2 = hybrid.get_or_fetch(&1, || async move { Ok::<_, Error>(vec![1; 7 * KB]) });
 
+        assert_eq!(f1.role(), foyer_memory::GetOrFetchRole::Lead);
+        assert_eq!(f2.role(), foyer_memory::GetOrFetchRole::Wait);
+        release.wait().await;
         let e1 = f1.await.unwrap();
         let e2 = f2.await.unwrap();
 
@@ -1610,6 +1625,9 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(e3.source(), Source::Memory);
+        let hit = hybrid.get_or_fetch(&1, || async move { Ok::<_, Error>(vec![1; 7 * KB]) });
+        assert_eq!(hit.role(), foyer_memory::GetOrFetchRole::Hit);
+        drop(hit);
         drop(e3);
 
         flush_switch.on();
